@@ -8,5 +8,6 @@ chromadb
 pypdf
 unstructured[all-docs]
 pillow
+networkx
 python-dotenv
 pytest
