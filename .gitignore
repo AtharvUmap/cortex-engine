@@ -1,0 +1,23 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# ChromaDB persisted data
+db/
+data/
+
+# Environment variables
+.env
+
+# Pytest cache
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Docs (personal reference, not tracked)
+docs/
