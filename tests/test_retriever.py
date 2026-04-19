@@ -147,18 +147,32 @@ def test_search_from_empty_database_returns_empty(
     assert results == []
 
 
+@patch("src.retriever.USE_MULTI_QUERY", True)
+@patch("src.retriever.MultiQueryRetriever")
 @patch("src.retriever.OllamaLLM")
 @patch("src.retriever.OllamaEmbeddings")
 @patch("src.embedding.OllamaEmbeddings")
 def test_search_invokes_llm_for_query_variations(
-    mock_embedding_ollama, mock_retriever_ollama, mock_llm_cls, tmp_path
+    mock_embedding_ollama, mock_retriever_ollama, mock_llm_cls, mock_mqr_cls, tmp_path
 ):
-    """With multi-query enabled, the LLM should be called to generate query variations.
-    This confirms the multi-query path is active by default.
+    """When multi-query is enabled, search() should construct a MultiQueryRetriever
+    and instantiate an OllamaLLM for it. Multi-query is OFF by default (see
+    retriever.py for the cross-document drift reason), so we force it ON here.
+
+    We stub out MultiQueryRetriever entirely — the real class builds an internal
+    Runnable chain (prompt | llm | parser) that requires a concrete string from
+    the LLM step, which our MagicMock can't satisfy. The assertion is about the
+    wrapping path being taken, not the chain executing end-to-end.
     """
     _setup_mock_embeddings(mock_embedding_ollama)
     _setup_mock_embeddings(mock_retriever_ollama)
-    mock_llm = _setup_mock_llm(mock_llm_cls, "roles")
+    _setup_mock_llm(mock_llm_cls, "roles")
+
+    # Stub the MultiQueryRetriever so its .invoke() returns an empty list
+    # instead of running the real Runnable pipeline.
+    mock_mqr = MagicMock()
+    mock_mqr.invoke.return_value = []
+    mock_mqr_cls.from_llm.return_value = mock_mqr
 
     db_path = str(tmp_path / "test_db")
     docs = _make_long_document_with_keyword("roles")
@@ -166,6 +180,7 @@ def test_search_invokes_llm_for_query_variations(
 
     search("What roles does X have", persist_directory=db_path)
 
-    # Either the LLM class was instantiated (for MultiQueryRetriever) or the
-    # mock LLM was invoked. Both prove we took the multi-query path.
+    # The wrapper was constructed — proof we took the multi-query path.
+    assert mock_mqr_cls.from_llm.called
+    # And an LLM was instantiated to pass into the wrapper.
     assert mock_llm_cls.called

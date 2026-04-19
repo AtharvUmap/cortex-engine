@@ -2,7 +2,7 @@ import streamlit as st
 
 from src.document_loader import load_documents
 from src.embedding import embed_documents
-from src.qa_chain import ask_question
+from src.synthesis import generate_answer
 
 # --- Page configuration ---
 st.set_page_config(page_title="Second Brain", layout="wide")
@@ -55,10 +55,10 @@ if user_input:
     # Save the user's message to chat history
     st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-    # Run the RAG pipeline to generate an answer
+    # Run the hybrid RAG pipeline (vector + knowledge graph) to generate an answer
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            response = ask_question(user_input)
+            response = generate_answer(user_input)
         st.write(response)
 
     # Save the assistant's response to chat history

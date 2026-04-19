@@ -37,7 +37,13 @@ from src.embedding import (
 
 # Number of child chunks to retrieve from ChromaDB per query variation.
 # With multi-query, the final parent count is the dedup'd union across queries.
-RETRIEVAL_K = 6
+#
+# Raised from 6 to 15 after diagnosing a case where the resume's top-scoring
+# child ranked 12th for a query like "What is Atharv Umap's experience."
+# Noise chunks (near-empty headers, font-stream blobs from PDFs) were pushing
+# legitimate content below a tight k=6 cutoff. Parent dedup collapses the
+# redundant children so the final context stays focused.
+RETRIEVAL_K = 15
 
 # LLM used to generate query variations for multi-query retrieval.
 # Pulled from the same env var as the main QA LLM so users can change both
