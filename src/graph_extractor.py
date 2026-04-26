@@ -54,6 +54,37 @@ Text to analyze:
 {content}
 """
 
+# Pass-2 prompt: factual attribute extraction. The relationship prompt above
+# steers the model toward (entity --verb--> entity) shapes, which crowds out
+# concrete facts like phone numbers, expiry dates, and identification numbers.
+# Splitting them into a dedicated prompt with a different schema gives small
+# local models a single, narrow job per call, which improves accuracy.
+ATTRIBUTE_PROMPT = """You are an attribute extraction engine. Extract concrete factual attributes (entity-field-value triples) from the text below.
+
+Return ONLY a valid JSON array. Do NOT include any explanation, prose, or markdown code fences. Do NOT wrap the output in ```json ... ```.
+
+Each element of the array must be an object with exactly these three keys:
+  - "entity": the entity the attribute belongs to (a short noun phrase — usually a person, document, or thing)
+  - "field": a short snake_case identifier for the attribute (e.g. "phone_number", "email", "expiry_date", "passport_number", "i20_number", "program_of_study", "address")
+  - "value": the literal value AS IT APPEARS in the text — a date, number, address, identifier, or short string. NOT another entity.
+
+Focus on:
+  - Identification numbers (passport, I-20, visa, SEVIS)
+  - Dates (expiry, issuance, program start/end)
+  - Contact info (phone, email, address)
+  - Document fields (program of study, education level, sponsor)
+
+Do NOT extract relationships between two entities — those are handled by a separate pass. Only extract (entity, field, value) where value is a concrete fact.
+
+Example output format:
+[{{"entity": "Atharv Umap", "field": "phone_number", "value": "240-555-1234"}}, {{"entity": "I-20", "field": "expiry_date", "value": "2027-05-15"}}]
+
+If the text contains no concrete attributes, return an empty array: []
+
+Text to analyze:
+{content}
+"""
+
 # Matches ```json ... ``` or ``` ... ``` fences that some models add despite
 # being told not to. Captures the inner body so we can feed it to json.loads.
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -72,6 +103,18 @@ def _is_valid_triple(item) -> bool:
     if not isinstance(item, dict):
         return False
     required = ("source", "target", "relationship")
+    return all(k in item and isinstance(item[k], str) and item[k] for k in required)
+
+
+def _is_valid_attribute(item) -> bool:
+    """An attribute must be a dict with entity/field/value all populated as strings.
+
+    Kept distinct from _is_valid_triple so the two passes can validate against
+    their own schemas without sharing key names.
+    """
+    if not isinstance(item, dict):
+        return False
+    required = ("entity", "field", "value")
     return all(k in item and isinstance(item[k], str) and item[k] for k in required)
 
 
@@ -116,3 +159,41 @@ def extract_graph_triples(document: Document) -> list[dict]:
     # Keep only well-formed triples so downstream graph construction can
     # assume every dict has the three required keys.
     return [item for item in parsed if _is_valid_triple(item)]
+
+
+def extract_attributes(document: Document) -> list[dict]:
+    """Extract (entity, field, value) attribute facts from a document.
+
+    Pass 2 of the two-pass extraction pipeline. Targets concrete factual
+    attributes — phone numbers, expiry dates, identification numbers — that
+    the relationship prompt actively steers the model away from. Mirrors the
+    defensive parsing of extract_graph_triples: returns [] on any failure
+    rather than raising, so one noisy doc cannot kill an ingestion batch.
+
+    Args:
+        document: A LangChain Document whose page_content will be analyzed.
+
+    Returns:
+        A list of dicts with keys "entity", "field", "value".
+        Returns [] if the document is empty or the LLM output can't be parsed.
+    """
+    content = (document.page_content or "").strip()
+    if not content:
+        return []
+
+    prompt = ATTRIBUTE_PROMPT.format(content=content)
+
+    llm = OllamaLLM(model=GRAPH_LLM_MODEL)
+    raw_output = llm.invoke(prompt)
+
+    cleaned = _clean_llm_output(raw_output)
+
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    return [item for item in parsed if _is_valid_attribute(item)]

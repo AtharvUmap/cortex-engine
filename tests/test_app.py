@@ -47,3 +47,19 @@ def test_app_has_chat_input():
 
     # Check that a chat_input widget is present
     assert len(at.chat_input) > 0
+
+
+def test_app_renders_chat_and_brain_map_tabs():
+    """The main area should be split into a Chat tab and a Brain Map tab."""
+    at = AppTest.from_file("app.py")
+    at.run()
+
+    # No error should be raised while rendering the tabbed layout — Streamlit
+    # surfaces tab construction failures as exceptions on the AppTest object.
+    assert not at.exception
+
+    # Both tabs should be present. AppTest.tabs is the flat sequence of every
+    # Tab element across the app, so we look up labels on each.
+    labels = [tab.label for tab in at.tabs]
+    assert "Chat" in labels
+    assert "Brain Map" in labels

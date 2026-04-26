@@ -36,6 +36,27 @@ LLM_MODEL = os.environ.get("CORTEX_LLM_MODEL", DEFAULT_LLM_MODEL)
 # document vaults where entity clusters stay small and tight.
 GRAPH_DEPTH = 2
 
+# --- Cross-encoder re-ranking (Ticket 18) ---------------------------------
+# Bi-encoder vector retrieval (the Parent-Child store) is fast but coarse:
+# it ranks chunks by approximate semantic similarity in a shared embedding
+# space. A cross-encoder runs the query and each candidate chunk through a
+# transformer together, scoring them on actual relevance — much more
+# accurate but too slow to run over the entire corpus. The trick is to use
+# the bi-encoder to fetch a short candidate list (e.g. RETRIEVAL_K=15 in
+# retriever.py) and then have the cross-encoder rerank just those, keeping
+# only the top few. That's what _rerank_chunks does below.
+CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+# Number of chunks to keep after re-ranking. 3 is small enough to leave
+# room for graph context in the final prompt, large enough to capture
+# multiple supporting passages when the answer spans documents.
+RERANK_TOP_K = 3
+
+# Lazy-loaded module-level cache. Loading the cross-encoder takes several
+# seconds (model weights + tokenizer) and we don't want to pay that cost on
+# import — only the first time a query actually needs reranking.
+_cross_encoder_instance = None
+
 # --- Entity extraction prompt ---------------------------------------------
 # Ask the LLM for the main noun phrase so we can query the graph with it.
 # Strict single-line output keeps post-processing simple. If the LLM adds
@@ -82,6 +103,53 @@ def _clean_entity(raw: str) -> str:
     if not raw:
         return ""
     return _ENTITY_STRIP_RE.sub("", raw).strip()
+
+
+def _get_cross_encoder():
+    """Lazy-load and cache the CrossEncoder model.
+
+    The import happens inside this function so sentence-transformers doesn't
+    have to be installed at module-import time (useful for tests that mock
+    the reranker entirely). The instance is cached on the module so
+    subsequent queries reuse the same loaded model.
+    """
+    global _cross_encoder_instance
+    if _cross_encoder_instance is None:
+        # Imported here, not at top-of-file, so test environments and
+        # tooling that doesn't need the reranker can skip the heavy import.
+        from sentence_transformers import CrossEncoder
+        _cross_encoder_instance = CrossEncoder(CROSS_ENCODER_MODEL)
+    return _cross_encoder_instance
+
+
+def _rerank_chunks(query: str, chunks: list, top_k: int = RERANK_TOP_K) -> list:
+    """Re-rank parent chunks against the query and return the top_k.
+
+    The bi-encoder vector store has already returned a short candidate list
+    (typically RETRIEVAL_K=15 chunks). This function runs each chunk through
+    the cross-encoder paired with the query, sorts by score descending, and
+    returns the top_k highest-scoring chunks. Order matters: the LLM gets
+    the most relevant passage first in the context block.
+
+    Empty input short-circuits before loading the model — important because
+    a fresh app instance can be queried before any documents are ingested,
+    and we'd rather not pay the multi-second model-load cost just to return
+    an empty list.
+    """
+    if not chunks:
+        return []
+
+    encoder = _get_cross_encoder()
+    # CrossEncoder.predict expects (query, candidate) pairs — one per chunk.
+    # The model returns one relevance score per pair.
+    pairs = [(query, doc.page_content) for doc in chunks]
+    scores = encoder.predict(pairs)
+
+    # Pair each score with its chunk and sort desc. Ties keep the order the
+    # bi-encoder produced (Python sort is stable), so when two passages are
+    # equally relevant the one the vector store ranked higher wins.
+    scored = sorted(zip(scores, chunks), key=lambda sc: sc[0], reverse=True)
+    return [chunk for _, chunk in scored[:top_k]]
 
 
 def _format_graph_triplets(triplets: list[dict]) -> str:
@@ -150,6 +218,13 @@ def generate_answer(query: str, persist_directory: str = "./db") -> str:
     # Step 2: Vector retrieval — use the user's full query, not the entity.
     # Parent-Child retrieval pulls rich surrounding context.
     vector_chunks = search(query, persist_directory=persist_directory)
+
+    # Step 2b: Cross-encoder re-ranking. The vector store returns a wide
+    # candidate set (RETRIEVAL_K=15) optimized for recall; the cross-encoder
+    # rescores each chunk against the query for true relevance and we keep
+    # only the top-K. Final context stays focused on the most relevant
+    # passages instead of getting diluted by near-misses from the bi-encoder.
+    vector_chunks = _rerank_chunks(query, vector_chunks)
 
     # Step 3: Graph retrieval — walk outward from the entity up to GRAPH_DEPTH
     # hops. If the entity isn't in the graph, this returns [] and the prompt

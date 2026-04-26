@@ -22,7 +22,7 @@ from langchain_classic.storage import LocalFileStore
 from langchain_classic.storage._lc_store import create_kv_docstore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from src.graph_extractor import extract_graph_triples
+from src.graph_extractor import extract_graph_triples, extract_attributes
 from src.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
@@ -172,24 +172,53 @@ def embed_documents(
     retriever.add_documents(documents)
 
     # Step 6 (optional): Build the knowledge graph alongside the vector store.
-    # One LLM call per document extracts (source, relationship, target) triples;
-    # results are merged into a NetworkX DiGraph and persisted as GraphML.
-    # Best-effort: one failed extraction should not wreck a full ingestion run,
-    # so each document is wrapped in try/except and a warning is logged.
+    # Two extraction passes per document, both feeding into one NetworkX DiGraph:
+    #   Pass 1 (extract_graph_triples) — entity-to-entity relationships.
+    #   Pass 2 (extract_attributes) — entity-field-value attribute facts
+    #       (phone numbers, expiry dates, identification numbers) that the
+    #       relationship prompt would otherwise crowd out.
+    # Each pass is best-effort and wrapped in its own try/except so a single
+    # noisy doc or LLM hiccup cannot wreck the whole ingestion run, and so
+    # a failure on one pass does not block the other pass for the same doc.
     if build_graph:
         graph_path = Path(persist_directory) / "graph.graphml"
         graph_store = GraphStore(graph_path=graph_path)
         for doc in documents:
+            source = doc.metadata.get("source", "<unknown>")
+
+            # Pass 1: relationships
             try:
                 triples = extract_graph_triples(doc)
             except Exception as exc:
-                source = doc.metadata.get("source", "<unknown>")
                 logger.warning(
-                    "Graph extraction failed for %s: %s — continuing with the next doc.",
+                    "Relationship extraction failed for %s: %s — continuing.",
                     source, exc,
                 )
-                continue
+                triples = []
             graph_store.add_triplets(triples)
+
+            # Pass 2: attributes. Convert to triplet shape
+            # (entity, value, field) so the existing graph store can ingest
+            # them without a schema change. The visualizer and graph walker
+            # then treat attribute edges identically to relationship edges.
+            try:
+                attributes = extract_attributes(doc)
+            except Exception as exc:
+                logger.warning(
+                    "Attribute extraction failed for %s: %s — continuing.",
+                    source, exc,
+                )
+                attributes = []
+            attribute_triplets = [
+                {
+                    "source": a["entity"],
+                    "target": a["value"],
+                    "relationship": a["field"],
+                }
+                for a in attributes
+            ]
+            graph_store.add_triplets(attribute_triplets)
+
         graph_store.save()
 
     return retriever

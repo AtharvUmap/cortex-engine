@@ -19,5 +19,9 @@ data/
 .vscode/
 .idea/
 
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
 # Docs (personal reference, not tracked)
 docs/

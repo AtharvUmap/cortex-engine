@@ -9,5 +9,7 @@ pypdf
 unstructured[all-docs]
 pillow
 networkx
+pyvis
+sentence-transformers
 python-dotenv
 pytest
