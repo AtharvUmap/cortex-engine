@@ -6,6 +6,8 @@ langchain-text-splitters
 langchain-chroma
 chromadb
 pypdf
+pypdfium2
+ocrmac; sys_platform == 'darwin'
 unstructured[all-docs]
 pillow
 networkx

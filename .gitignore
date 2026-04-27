@@ -23,5 +23,8 @@ data/
 .DS_Store
 **/.DS_Store
 
+# Eval cases with personal data (SEVIS ID, phone, etc.)
+eval/real_doc_cases.py
+
 # Docs (personal reference, not tracked)
 docs/
