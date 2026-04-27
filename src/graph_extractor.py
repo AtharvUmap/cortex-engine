@@ -20,11 +20,14 @@ Design notes:
 """
 
 import json
+import logging
 import os
 import re
 
 from langchain_core.documents import Document
 from langchain_ollama import OllamaLLM
+
+logger = logging.getLogger(__name__)
 
 # Reuse the same LLM env var as the QA chain so one setting controls the
 # whole app. llama3.2 (3B) is usually sufficient for triple extraction;
@@ -88,6 +91,39 @@ Text to analyze:
 # Matches ```json ... ``` or ``` ... ``` fences that some models add despite
 # being told not to. Captures the inner body so we can feed it to json.loads.
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+
+
+# Shape-first attribute typing (Ticket 21). Order matters: first match wins,
+# so put the more specific patterns first. Values whose shape matches a
+# pattern get the canonical field name regardless of what the LLM called
+# them; values that match no pattern keep the LLM's label.
+ATTRIBUTE_SHAPE_PATTERNS = [
+    (re.compile(r"^N\d{8,10}$"),                "sevis_id"),
+    (re.compile(r"^[A-Z]-?\d[A-Z]?$"),          "visa_class"),
+    (re.compile(r"^[A-Z]\d{7,8}$"),             "passport_number"),
+    (re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "email"),
+    (re.compile(r"^\+?[\d\-\.\s\(\)]{10,}$"),   "phone_number"),
+]
+
+
+def _canonical_field(value: str, llm_field: str) -> str:
+    """Override the LLM's field name when the value's shape is a known identifier.
+
+    The LLM is good at spotting facts, brittle at deciding what to call them.
+    Walk ATTRIBUTE_SHAPE_PATTERNS; on the first regex match, return the
+    canonical field name and (if it differs from what the LLM said) log the
+    correction at INFO so we can see how often the LLM is wrong. On no match,
+    pass the LLM's label through unchanged.
+    """
+    for pattern, canonical in ATTRIBUTE_SHAPE_PATTERNS:
+        if pattern.match(value):
+            if canonical != llm_field:
+                logger.info(
+                    "Reassigned attribute field by shape: value=%r llm_field=%r → %r",
+                    value, llm_field, canonical,
+                )
+            return canonical
+    return llm_field
 
 
 def _clean_llm_output(raw: str) -> str:
@@ -196,4 +232,7 @@ def extract_attributes(document: Document) -> list[dict]:
     if not isinstance(parsed, list):
         return []
 
-    return [item for item in parsed if _is_valid_attribute(item)]
+    valid = [item for item in parsed if _is_valid_attribute(item)]
+    for item in valid:
+        item["field"] = _canonical_field(item["value"], item["field"])
+    return valid
