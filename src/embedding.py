@@ -24,6 +24,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from src.graph_extractor import extract_graph_triples, extract_attributes
 from src.graph_store import GraphStore
+from src.factual_index import extract_facts, save_facts
+from src.document_owner import build_owner_index, save_owners
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +104,42 @@ class _FilteringTextSplitter(RecursiveCharacterTextSplitter):
         return [c for c in chunks if is_meaningful_chunk(c.page_content)]
 
 
+def _annotate_owners(documents: list, owners: dict) -> None:
+    """Set metadata['owner'] on every input doc from the owners map.
+
+    Done in-place before the splitter runs so every parent and child chunk
+    inherits the owner tag — the langchain text splitters propagate metadata
+    automatically. Docs whose source isn't in the owners map (or whose owner
+    is None) get no 'owner' key, so vector retrieval can still surface them
+    on generic queries that don't filter by owner.
+    """
+    for doc in documents:
+        source = (doc.metadata or {}).get("source", "")
+        entry = owners.get(source) or {}
+        owner = entry.get("owner")
+        if owner:
+            # Mutate in place — splitter sees the updated metadata.
+            doc.metadata = {**(doc.metadata or {}), "owner": owner}
+
+
 def embed_documents(
     documents: list,
     persist_directory: str = DEFAULT_PERSIST_DIR,
     build_graph: bool = True,
+    build_facts: bool = True,
+    build_owners: bool = True,
 ):
     """Embed documents using Parent-Child retrieval and store them persistently.
 
     Also (when build_graph=True) runs each input document through the LLM-backed
     triple extractor and persists the resulting knowledge graph to
-    {persist_directory}/graph.graphml. This is what lets the synthesis engine's
-    graph lookup return real facts at query time instead of []s.
+    {persist_directory}/graph.graphml. And (when build_facts=True) scans every
+    document with FACT_PATTERNS and persists a regex-built factual index to
+    {persist_directory}/facts.json. Ticket 23 added (when build_owners=True)
+    a per-document owner inference pass that writes
+    {persist_directory}/owners.json and binds each fact + chunk + graph entity
+    to the document's primary owner so synthesis-time filtering can reject
+    cross-owner contamination.
 
     Args:
         documents: A list of LangChain Document objects (one per source file).
@@ -120,10 +147,26 @@ def embed_documents(
         build_graph: If True (default), extract triples and save the knowledge
             graph. Set False for fast re-indexing when the graph is already
             current or intentionally not wanted.
+        build_facts: If True (default), scan documents for structured facts
+            (emails, phones, IDs) and write facts.json. Set False for fast
+            re-indexing when the fact index is already current.
+        build_owners: If True (default), infer per-document primary entity and
+            write owners.json. Without this, every fact is recorded with
+            entity=None and lookup falls back to legacy non-filtered behavior.
 
     Returns:
         A ParentDocumentRetriever that searches children and returns parents.
     """
+    # Step 0 (optional): Per-document owner inference (Ticket 23). Run first
+    # so the inferred owners can flow into vector chunk metadata, graph
+    # canonicals, and the factual index in subsequent steps.
+    owners: dict = {}
+    if build_owners:
+        owners = build_owner_index(documents)
+        save_owners(owners, Path(persist_directory) / "owners.json")
+        # Annotate docs in place so chunks inherit owner metadata at split time.
+        _annotate_owners(documents, owners)
+
     # Step 1: Define the two splitters.
     # Overlap is important — without it, a sentence split across two chunks
     # loses its meaning in both halves, hurting retrieval accuracy.
@@ -183,6 +226,15 @@ def embed_documents(
     if build_graph:
         graph_path = Path(persist_directory) / "graph.graphml"
         graph_store = GraphStore(graph_path=graph_path)
+
+        # Seed canonical names from the inferred owners BEFORE any triplets
+        # land. An OCR variant of a known owner ("ATHARV AMAR" for "Atharv
+        # Umap") will fuzzy-resolve into the seeded canonical instead of
+        # spawning a duplicate node.
+        for entry in owners.values():
+            if isinstance(entry, dict) and entry.get("owner"):
+                graph_store.register_canonical(entry["owner"])
+
         for doc in documents:
             source = doc.metadata.get("source", "<unknown>")
 
@@ -220,5 +272,14 @@ def embed_documents(
             graph_store.add_triplets(attribute_triplets)
 
         graph_store.save()
+
+    # Step 7 (optional): Build the regex-first factual index (Ticket 20).
+    # Scans the raw input documents for emails, phones, and structured IDs;
+    # persists the matches to facts.json. Ticket 23 attaches each match to
+    # the document's owner (from Step 0) so generate_answer can filter by
+    # the entity named in the user's query.
+    if build_facts:
+        facts = extract_facts(documents, owners=owners)
+        save_facts(facts, Path(persist_directory) / "facts.json")
 
     return retriever

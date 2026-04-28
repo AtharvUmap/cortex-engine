@@ -15,6 +15,11 @@ Pipeline:
 The split matters: vector retrieval is great at "find passages that sound
 like the question"; graph retrieval is great at "what else is connected
 to this entity?" Neither alone is as strong as both together.
+
+Ticket 23 added per-entity ownership filtering. When the user asks about a
+specific person, both the direct-facts block and the vector chunks are
+filtered to only that person's documents — preventing the LLM from quoting
+Atharv's email when the user asked about Amar.
 """
 
 import os
@@ -26,6 +31,9 @@ from langchain_core.prompts import PromptTemplate
 
 from src.retriever import search
 from src.graph_store import GraphStore
+from src.factual_index import _entity_signal_from_query, load_facts, lookup
+from src.document_owner import load_owners
+from src.entity_resolution import resolve_against
 
 # Reuse the shared LLM env var so one setting controls the whole app.
 DEFAULT_LLM_MODEL = "llama3.2"
@@ -83,6 +91,7 @@ Question: {query}
 FINAL_ANSWER_PROMPT = PromptTemplate.from_template(
     """You are a helpful assistant that answers questions strictly based on the provided context.
 Do NOT use any outside knowledge. Only use the information given in the context below.
+If the context contains a "Direct facts" section, prefer those values — they are extracted with regex and are guaranteed accurate.
 If the context does not contain enough information to answer the question, say:
 "I don't have enough context to answer that."
 
@@ -152,6 +161,49 @@ def _rerank_chunks(query: str, chunks: list, top_k: int = RERANK_TOP_K) -> list:
     return [chunk for _, chunk in scored[:top_k]]
 
 
+def _filter_chunks_by_owner(query: str, chunks: list, owners: dict) -> list:
+    """Filter retrieved chunks by the queried owner (Ticket 23 + 23.5).
+
+    Mirrors `factual_index.lookup`'s filtering matrix so vector retrieval
+    and direct facts behave consistently:
+
+      | Signal | Owner match | Chunks kept                                 |
+      |--------|-------------|---------------------------------------------|
+      | None   | n/a         | all (generic query — no filter)             |
+      | weak   | match       | matched-owner + unattributed (owner is None)|
+      | weak   | no match    | all (don't suppress on weak signal)         |
+      | strong | match       | matched-owner + unattributed                |
+      | strong | no match    | [] (the screenshot fix)                     |
+
+    Unattributed chunks (no `owner` key, or `owner=None`) are kept alongside
+    matched-owner chunks because the doc could belong to anyone — including
+    the queried person whose owner inference happened to fail. Vector
+    retrieval has already filtered them for relevance.
+
+    Empty owner index — or one where every inference returned `None` — falls
+    through to legacy non-filtered behavior.
+    """
+    owner_names = sorted({
+        e["owner"] for e in (owners or {}).values()
+        if isinstance(e, dict) and e.get("owner")
+    })
+    if not owner_names:
+        return chunks
+
+    queried_entity, signal = _entity_signal_from_query(query)
+    if queried_entity is None or signal is None:
+        return chunks
+
+    matched_owner = resolve_against(queried_entity, owner_names)
+    if matched_owner is None:
+        return [] if signal == "strong" else chunks
+
+    return [
+        c for c in chunks
+        if (c.metadata or {}).get("owner") in (matched_owner, None)
+    ]
+
+
 def _format_graph_triplets(triplets: list[dict]) -> str:
     """Render graph triplets as one human-readable line per fact."""
     return "\n".join(
@@ -177,15 +229,39 @@ def _format_vector_chunks(chunks: list) -> str:
     return "\n\n".join(blocks)
 
 
-def _build_context(vector_chunks: list, graph_triplets: list[dict]) -> str:
+def _format_direct_facts(direct_facts: list) -> str:
+    """Render direct-fact tuples as one human-readable line per fact.
+
+    Tuple shape since Ticket 23: (field, entity, value, source). When entity
+    is present (the typical case after Ticket 23's owner inference), it's
+    rendered inline so the LLM has explicit attribution and can't fall into
+    the cross-attribution failure mode.
+    """
+    lines = []
+    for entry in direct_facts:
+        field, entity, value, source = entry
+        source_name = Path(source).name if source else "unknown source"
+        if entity:
+            lines.append(f"  - {entity}'s {field} = {value} (source: {source_name})")
+        else:
+            lines.append(f"  - {field} = {value} (source: {source_name})")
+    return "Direct facts (from indexed documents):\n" + "\n".join(lines)
+
+
+def _build_context(
+    vector_chunks: list,
+    graph_triplets: list[dict],
+    direct_facts: list | None = None,
+) -> str:
     """Combine retrieval sources into a single context block.
 
-    When the graph is empty (typical before graph ingestion is wired up),
-    the output is just the vector chunks — identical to the shape the old
-    QA chain used, which the 3B model handled well. When graph facts ARE
-    present, they are appended under a short labeled sub-header.
+    When direct_facts are present, they lead the block — the prompt nudges
+    the LLM to prefer them since they are regex-extracted and guaranteed
+    accurate. Vector and graph context follow, gated on having content.
     """
     parts = []
+    if direct_facts:
+        parts.append(_format_direct_facts(direct_facts))
     if vector_chunks:
         parts.append(_format_vector_chunks(vector_chunks))
     if graph_triplets:
@@ -200,8 +276,8 @@ def generate_answer(query: str, persist_directory: str = "./db") -> str:
 
     Args:
         query: The user's natural-language question.
-        persist_directory: Root directory holding both the vector store
-            (./db) and graph.graphml.
+        persist_directory: Root directory holding the vector store, graph,
+            factual index, and (Ticket 23) owners index.
 
     Returns:
         The final LLM answer as a string.
@@ -210,6 +286,22 @@ def generate_answer(query: str, persist_directory: str = "./db") -> str:
     # and the final-answer call; constructing it once avoids a second cold
     # start on the same model.
     llm = OllamaLLM(model=LLM_MODEL)
+
+    # Step 0a: Load the owner index (Ticket 23). Empty dict on first run
+    # before any ingestion, in which case the rest of the pipeline behaves
+    # like the pre-Ticket-23 path (no filtering).
+    owners = load_owners(Path(persist_directory) / "owners.json")
+
+    # Step 0b: Direct factual lookup (Ticket 20 + 23). For questions asking
+    # about a structured field (email, phone, IDs, visa class), bypass
+    # retrieval brittleness by reading from the regex-built fact index.
+    # When owners are present, lookup filters by the entity named in the
+    # query — preventing cross-owner attribution.
+    direct_facts = lookup(
+        query,
+        load_facts(Path(persist_directory) / "facts.json"),
+        owners=owners,
+    )
 
     # Step 1: Extract the core entity so we know where to root the graph walk.
     entity_raw = llm.invoke(ENTITY_EXTRACTION_PROMPT.format(query=query))
@@ -226,6 +318,12 @@ def generate_answer(query: str, persist_directory: str = "./db") -> str:
     # passages instead of getting diluted by near-misses from the bi-encoder.
     vector_chunks = _rerank_chunks(query, vector_chunks)
 
+    # Step 2c: Owner filtering (Ticket 23). When the user asks about a
+    # specific person, drop chunks not owned by that person. When they ask
+    # about someone who isn't an owner of any indexed document, drop them
+    # all so the LLM cannot misattribute another owner's content.
+    vector_chunks = _filter_chunks_by_owner(query, vector_chunks, owners)
+
     # Step 3: Graph retrieval — walk outward from the entity up to GRAPH_DEPTH
     # hops. If the entity isn't in the graph, this returns [] and the prompt
     # degrades gracefully to vector-only.
@@ -233,9 +331,10 @@ def generate_answer(query: str, persist_directory: str = "./db") -> str:
     graph_facts = graph.get_neighborhood(entity, depth=GRAPH_DEPTH) if entity else []
 
     # Step 4: Build one flat context block and ask for the final answer.
-    # Keeping graph and vector in a single block (rather than two labeled
-    # sections) keeps the prompt shape that small models handle reliably.
-    context = _build_context(vector_chunks, graph_facts)
+    # Direct facts (when present) lead the block; vector and graph context
+    # follow. Keeping everything in one block keeps the prompt shape that
+    # small models handle reliably.
+    context = _build_context(vector_chunks, graph_facts, direct_facts)
 
     prompt = FINAL_ANSWER_PROMPT.format(
         context=context,

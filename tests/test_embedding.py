@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -37,11 +38,12 @@ def _fake_embedding_function(texts):
 
 # --- Tests ---
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_returns_parent_document_retriever(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """embed_documents should return a ParentDocumentRetriever instance."""
     mock_embeddings = MagicMock()
@@ -60,11 +62,12 @@ def test_embed_documents_returns_parent_document_retriever(
     assert hasattr(retriever, "invoke")
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_stores_children_in_chroma(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """Child chunks should be stored in the ChromaDB vectorstore."""
     mock_embeddings = MagicMock()
@@ -81,11 +84,12 @@ def test_embed_documents_stores_children_in_chroma(
     assert child_count > 0
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_stores_parents_in_filestore(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """Parent chunks should be stored in the LocalFileStore under ./db/docstore."""
     mock_embeddings = MagicMock()
@@ -102,11 +106,12 @@ def test_embed_documents_stores_parents_in_filestore(
     assert len(parent_keys) > 0
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_children_outnumber_parents(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """There should be more child chunks than parent chunks.
     (Children are smaller, so each parent produces multiple children.)
@@ -200,11 +205,12 @@ def _multi_docs():
     ]
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_extracts_triples_per_document(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """Graph extraction should run exactly once per input document by default."""
     mock_embeddings = MagicMock()
@@ -220,11 +226,12 @@ def test_embed_documents_extracts_triples_per_document(
     assert mock_extract.call_count == len(docs)
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples")
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_persists_graph_to_disk(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """The extracted triples should be saved to graph.graphml under persist_directory."""
     mock_embeddings = MagicMock()
@@ -255,11 +262,12 @@ def test_embed_documents_persists_graph_to_disk(
     assert reloaded.graph["Maryland"]["USA"]["relationship"] == "located_in"
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes")
 @patch("src.embedding.extract_graph_triples")
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_skips_graph_when_build_graph_false(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """build_graph=False should skip BOTH extraction passes entirely — useful for
     fast re-indexing when the graph is already up to date or explicitly not wanted."""
@@ -278,11 +286,12 @@ def test_embed_documents_skips_graph_when_build_graph_false(
     assert not (Path(db_path) / "graph.graphml").exists()
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples")
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_continues_on_extraction_failure(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """If relationship extraction raises for one doc, ingestion should continue
     with the rest. Graph extraction is best-effort — a single noisy doc or LLM
@@ -316,11 +325,12 @@ def test_embed_documents_continues_on_extraction_failure(
 # Pass 1 (relationships) and Pass 2 (attributes) must both run per document
 # and both feed into the same persisted graph.
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes", return_value=[])
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_runs_attribute_extraction_per_document(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """Attribute extraction must run exactly once per input document — same
     cadence as relationship extraction so neither pass starves the other."""
@@ -337,11 +347,12 @@ def test_embed_documents_runs_attribute_extraction_per_document(
     assert mock_extract_attrs.call_count == len(docs)
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes")
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_persists_attributes_to_graph(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """Attributes extracted by Pass 2 should land in the same graph as
     relationship triples, encoded as (entity --[field]--> value) edges so the
@@ -370,11 +381,12 @@ def test_embed_documents_persists_attributes_to_graph(
     assert reloaded.graph["I-20"]["2027-05-15"]["relationship"] == "expiry_date"
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes")
 @patch("src.embedding.extract_graph_triples", return_value=[])
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_continues_when_attribute_extraction_fails(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """If attribute extraction raises for one doc, the other doc's attributes
     should still land. The two passes are independent — neither failure mode
@@ -400,11 +412,12 @@ def test_embed_documents_continues_when_attribute_extraction_fails(
     assert reloaded.graph.has_edge("I-20", "2027-05-15")
 
 
+@patch("src.embedding.build_owner_index", return_value={})
 @patch("src.embedding.extract_attributes")
 @patch("src.embedding.extract_graph_triples")
 @patch("src.embedding.OllamaEmbeddings")
 def test_embed_documents_attribute_failure_does_not_block_relationships(
-    mock_ollama_cls, mock_extract, mock_extract_attrs, tmp_path
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
 ):
     """A failure in Pass 2 (attributes) for a given doc must not prevent
     Pass 1 (relationships) results from that same doc reaching the graph."""
@@ -430,3 +443,185 @@ def test_embed_documents_attribute_failure_does_not_block_relationships(
 
     reloaded = GraphStore(graph_path=Path(db_path) / "graph.graphml")
     assert reloaded.graph.has_edge("Atharv", "Maryland")
+
+
+# --- Factual index persistence (Ticket 20) ---------------------------------
+
+@patch("src.embedding.build_owner_index", return_value={})
+@patch("src.embedding.extract_attributes", return_value=[])
+@patch("src.embedding.extract_graph_triples", return_value=[])
+@patch("src.embedding.OllamaEmbeddings")
+def test_embed_documents_builds_facts_index(
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
+):
+    """A facts.json must appear in persist_directory and contain regex-found values."""
+    mock_embeddings = MagicMock()
+    mock_embeddings.embed_documents.side_effect = _fake_embedding_function
+    mock_embeddings.embed_query.side_effect = lambda t: _fake_embedding_function([t])[0]
+    mock_ollama_cls.return_value = mock_embeddings
+
+    # Long enough to survive child-chunk filtering, with a real email embedded.
+    body = (
+        "Reach Atharv at atharvumap@gmail.com. "
+        "His passport number is T3859852. "
+        + "Lorem ipsum dolor sit amet consectetur adipiscing elit. " * 20
+    )
+    docs = [Document(page_content=body, metadata={"source": "resume.pdf"})]
+    db_path = str(tmp_path / "test_db")
+
+    embed_documents(docs, persist_directory=db_path)
+
+    facts_path = Path(db_path) / "facts.json"
+    assert facts_path.exists()
+    facts = json.loads(facts_path.read_text())
+    # 3-tuple shape since Ticket 23: [entity, value, source]
+    email_values = [v for _, v, _ in facts["email"]]
+    passport_values = [v for _, v, _ in facts["passport_number"]]
+    assert "atharvumap@gmail.com" in email_values
+    assert "T3859852" in passport_values
+
+
+@patch("src.embedding.build_owner_index", return_value={})
+@patch("src.embedding.extract_attributes", return_value=[])
+@patch("src.embedding.extract_graph_triples", return_value=[])
+@patch("src.embedding.OllamaEmbeddings")
+def test_embed_documents_skips_facts_when_build_facts_false(
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
+):
+    """build_facts=False must leave no facts.json on disk — mirrors build_graph=False."""
+    mock_embeddings = MagicMock()
+    mock_embeddings.embed_documents.side_effect = _fake_embedding_function
+    mock_embeddings.embed_query.side_effect = lambda t: _fake_embedding_function([t])[0]
+    mock_ollama_cls.return_value = mock_embeddings
+
+    docs = _make_long_document()
+    db_path = str(tmp_path / "test_db")
+
+    embed_documents(docs, persist_directory=db_path, build_facts=False)
+
+    assert not (Path(db_path) / "facts.json").exists()
+
+
+# --- Owner index persistence (Ticket 23) -----------------------------------
+
+@patch("src.embedding.build_owner_index")
+@patch("src.embedding.extract_attributes", return_value=[])
+@patch("src.embedding.extract_graph_triples", return_value=[])
+@patch("src.embedding.OllamaEmbeddings")
+def test_embed_documents_writes_owners_json(
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
+):
+    """An owners.json must appear in persist_directory with one entry per doc."""
+    mock_embeddings = MagicMock()
+    mock_embeddings.embed_documents.side_effect = _fake_embedding_function
+    mock_embeddings.embed_query.side_effect = lambda t: _fake_embedding_function([t])[0]
+    mock_ollama_cls.return_value = mock_embeddings
+
+    docs = _multi_docs()
+    mock_build_owners.return_value = {
+        "resume.pdf":   {"owner": "Atharv Umap", "confidence": "high"},
+        "about_umd.pdf": {"owner": None,         "confidence": "none"},
+    }
+
+    db_path = str(tmp_path / "test_db")
+    embed_documents(docs, persist_directory=db_path)
+
+    owners_path = Path(db_path) / "owners.json"
+    assert owners_path.exists()
+    loaded = json.loads(owners_path.read_text())
+    assert loaded["resume.pdf"]["owner"] == "Atharv Umap"
+    assert loaded["about_umd.pdf"]["owner"] is None
+
+
+@patch("src.embedding.build_owner_index")
+@patch("src.embedding.extract_attributes", return_value=[])
+@patch("src.embedding.extract_graph_triples", return_value=[])
+@patch("src.embedding.OllamaEmbeddings")
+def test_embed_documents_annotates_chunks_with_owner_metadata(
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
+):
+    """The owner is set on each input doc's metadata before splitting, so every
+    parent and child chunk carries it forward into the vector store."""
+    mock_embeddings = MagicMock()
+    mock_embeddings.embed_documents.side_effect = _fake_embedding_function
+    mock_embeddings.embed_query.side_effect = lambda t: _fake_embedding_function([t])[0]
+    mock_ollama_cls.return_value = mock_embeddings
+
+    docs = _multi_docs()
+    mock_build_owners.return_value = {
+        "resume.pdf":   {"owner": "Atharv Umap", "confidence": "high"},
+        "about_umd.pdf": {"owner": "University of Maryland", "confidence": "high"},
+    }
+
+    db_path = str(tmp_path / "test_db")
+    retriever = embed_documents(docs, persist_directory=db_path)
+
+    # Pull the stored child chunks back out and verify owner metadata survived.
+    collection = retriever.vectorstore._collection
+    metadatas = collection.get()["metadatas"]
+    owners_seen = {m.get("owner") for m in metadatas}
+    assert "Atharv Umap" in owners_seen
+    assert "University of Maryland" in owners_seen
+
+
+@patch("src.embedding.build_owner_index")
+@patch("src.embedding.extract_attributes", return_value=[])
+@patch("src.embedding.extract_graph_triples")
+@patch("src.embedding.OllamaEmbeddings")
+def test_embed_documents_seeds_graph_with_owner_canonicals(
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
+):
+    """Owner names must be registered as canonical graph entities BEFORE triplets
+    are inserted, so first-name-only mentions ('Atharv') resolve to the seeded
+    canonical ('Atharv Umap') via token containment instead of spawning a
+    duplicate node — the most common cause of graph fragmentation."""
+    mock_embeddings = MagicMock()
+    mock_embeddings.embed_documents.side_effect = _fake_embedding_function
+    mock_embeddings.embed_query.side_effect = lambda t: _fake_embedding_function([t])[0]
+    mock_ollama_cls.return_value = mock_embeddings
+
+    # Owner: 'Atharv Umap'. Triplets use the bare first name — the kind of
+    # variant the LLM emits all the time when the document body says "Atharv"
+    # without repeating the surname. Without owner seeding these end up as
+    # separate "Atharv" + "Atharv Umap" nodes.
+    mock_build_owners.return_value = {
+        "resume.pdf":   {"owner": "Atharv Umap", "confidence": "high"},
+        "about_umd.pdf": {"owner": None,         "confidence": "none"},
+    }
+    mock_extract.side_effect = [
+        [{"source": "Atharv", "target": "Maryland", "relationship": "attends"}],
+        [],
+    ]
+
+    docs = _multi_docs()
+    db_path = str(tmp_path / "test_db")
+    embed_documents(docs, persist_directory=db_path)
+
+    reloaded = GraphStore(graph_path=Path(db_path) / "graph.graphml")
+    # The shorthand must collapse into 'Atharv Umap' — the canonical seeded
+    # from the document's owner — not survive as a separate node.
+    assert "Atharv Umap" in reloaded.graph.nodes
+    assert "Atharv" not in reloaded.graph.nodes
+    assert reloaded.graph.has_edge("Atharv Umap", "Maryland")
+
+
+@patch("src.embedding.build_owner_index")
+@patch("src.embedding.extract_attributes", return_value=[])
+@patch("src.embedding.extract_graph_triples", return_value=[])
+@patch("src.embedding.OllamaEmbeddings")
+def test_embed_documents_skips_owner_inference_when_disabled(
+    mock_ollama_cls, mock_extract, mock_extract_attrs, mock_build_owners, tmp_path
+):
+    """build_owners=False must skip owner inference entirely — no LLM call,
+    no owners.json, and facts.json reverts to entity=None entries."""
+    mock_embeddings = MagicMock()
+    mock_embeddings.embed_documents.side_effect = _fake_embedding_function
+    mock_embeddings.embed_query.side_effect = lambda t: _fake_embedding_function([t])[0]
+    mock_ollama_cls.return_value = mock_embeddings
+
+    docs = _multi_docs()
+    db_path = str(tmp_path / "test_db")
+    embed_documents(docs, persist_directory=db_path, build_owners=False)
+
+    mock_build_owners.assert_not_called()
+    assert not (Path(db_path) / "owners.json").exists()

@@ -368,3 +368,421 @@ def test_cross_encoder_model_constant_matches_spec():
     """The reranker must use the exact model the ticket specifies. Hard-coded
     so the constant is part of the contract, not an implementation detail."""
     assert CROSS_ENCODER_MODEL == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+# --- Direct-facts injection (Ticket 20) -----------------------------------
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_injects_direct_facts_when_intent_matches(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """When the fact index has the answer for a known-intent query, the LLM
+    prompt must contain a 'Direct facts' block with the actual value."""
+    mock_load_facts.return_value = {
+        "email": [("Atharv Umap", "atharvumap@gmail.com", "resume.pdf")],
+    }
+    mock_load_owners.return_value = {
+        "resume.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    mock_llm = _setup_llm_mock(mock_llm_cls, "atharv", "atharvumap@gmail.com")
+    mock_search.return_value = []
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("what is atharv's email address?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "atharvumap@gmail.com" in final_prompt
+    assert "Direct facts (from indexed documents):" in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_omits_direct_facts_when_index_empty(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """An empty fact index must not emit a stray 'Direct facts' header —
+    the section is gated on having actual hits to display."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {}
+    mock_llm = _setup_llm_mock(
+        mock_llm_cls, "atharv", "I don't have enough context to answer that."
+    )
+    mock_search.return_value = _mock_vector_chunks()
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("what is atharv's email address?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "Direct facts (from indexed documents):" not in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_omits_direct_facts_for_unknown_intent(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """A query whose intent doesn't match any field must skip the direct-facts
+    block even if the index has data — prevents irrelevant fact dumps."""
+    mock_load_facts.return_value = {
+        "email": [("Atharv Umap", "atharvumap@gmail.com", "resume.pdf")],
+    }
+    mock_load_owners.return_value = {
+        "resume.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    mock_llm = _setup_llm_mock(
+        mock_llm_cls, "Atharv", "Atharv attended Maryland."
+    )
+    mock_search.return_value = _mock_vector_chunks()
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("Where did Atharv go to school?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "Direct facts (from indexed documents):" not in final_prompt
+
+
+# --- Owner-aware filtering (Ticket 23) ------------------------------------
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_omits_direct_facts_when_query_owner_unknown(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """The screenshot bug: query asks about a person who isn't an owner of any
+    indexed document. Direct-facts block must be suppressed entirely so the
+    LLM cannot misattribute the only email in the corpus."""
+    mock_load_facts.return_value = {
+        "email": [("Atharv Umap", "atharvumap@gmail.com", "resume.pdf")],
+    }
+    mock_load_owners.return_value = {
+        "resume.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    mock_llm = _setup_llm_mock(
+        mock_llm_cls, "Amar Umap", "I don't have enough context to answer that."
+    )
+    mock_search.return_value = []
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("what is amar umap's email?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "Direct facts (from indexed documents):" not in final_prompt
+    # And critically, the email must not appear anywhere in the prompt
+    assert "atharvumap@gmail.com" not in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_filters_vector_chunks_by_owner_when_query_owner_unknown(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """When the query names someone unknown to the corpus, vector chunks (which
+    inherit owner metadata at ingest) must also be filtered out — otherwise the
+    LLM still sees Atharv's resume content and may misattribute it."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {
+        "resume.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    chunks = [
+        Document(
+            page_content="Atharv attended Maryland.",
+            metadata={"source": "resume.pdf", "owner": "Atharv Umap"},
+        ),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(
+        mock_llm_cls, "Amar Umap", "I don't have enough context to answer that."
+    )
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("what is amar umap's email?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    # Atharv's content must NOT appear when the user asked about a different,
+    # unknown person.
+    assert "Atharv attended Maryland" not in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_keeps_vector_chunks_when_owner_matches(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """Sanity check the inverse: when the queried entity DOES match an owner,
+    that owner's chunks must reach the prompt unchanged."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {
+        "resume.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    chunks = [
+        Document(
+            page_content="Atharv attended Maryland.",
+            metadata={"source": "resume.pdf", "owner": "Atharv Umap"},
+        ),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(mock_llm_cls, "Atharv", "Atharv attended Maryland.")
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("Where did Atharv go to school?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "Atharv attended Maryland" in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_filters_chunks_by_owner_in_multi_owner_corpus(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """Multi-owner corpus, query about one owner — only that owner's chunks
+    survive into the prompt."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {
+        "atharv.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+        "sneha.pdf":  {"owner": "Sneha Umap",  "confidence": "high"},
+    }
+    chunks = [
+        Document(
+            page_content="Atharv works in software.",
+            metadata={"source": "atharv.pdf", "owner": "Atharv Umap"},
+        ),
+        Document(
+            page_content="Sneha works in finance.",
+            metadata={"source": "sneha.pdf", "owner": "Sneha Umap"},
+        ),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(mock_llm_cls, "Atharv", "Atharv works in software.")
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("What does Atharv do?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "Atharv works in software" in final_prompt
+    assert "Sneha works in finance" not in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_direct_facts_block_includes_owner_in_rendered_line(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """The rendered direct-facts line must include the owner so the LLM
+    knows whose fact this is — and whose it isn't."""
+    mock_load_facts.return_value = {
+        "email": [("Atharv Umap", "atharvumap@gmail.com", "resume.pdf")],
+    }
+    mock_load_owners.return_value = {
+        "resume.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    mock_llm = _setup_llm_mock(mock_llm_cls, "Atharv", "atharvumap@gmail.com")
+    mock_search.return_value = []
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("what is atharv's email?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    # Owner must be visible inline with the fact, not just in the source tag
+    assert "Atharv Umap" in final_prompt
+    assert "atharvumap@gmail.com" in final_prompt
+
+
+# --- Signal-aware filtering (Ticket 23.5) --------------------------------
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_keeps_chunks_for_weak_signal_no_match(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """Query about a non-person capitalized noun ('Maryland') against a corpus
+    owned by Atharv. Ticket 23 wrongly suppressed all chunks here; 23.5 keeps
+    them because the signal is weak (no possessive 'Maryland's')."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {
+        "atharv.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    chunks = [
+        Document(
+            page_content="The University of Maryland is in College Park.",
+            metadata={"source": "atharv.pdf", "owner": "Atharv Umap"},
+        ),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(mock_llm_cls, "Maryland", "Maryland is in College Park.")
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("Tell me about Maryland")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    # Weak-signal query about a non-owner must NOT suppress vector context.
+    assert "University of Maryland" in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_keeps_unattributed_chunks_alongside_matched_owner(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """Owner-tagged chunk + unattributed chunk both reach the prompt when the
+    query matches the tagged owner. Ticket 23 dropped the unattributed one,
+    making failed-inference docs invisible. 23.5 includes them."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {
+        "atharv.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+        "scan.pdf":   {"owner": None,         "confidence": "none"},
+    }
+    chunks = [
+        Document(
+            page_content="Atharv works in software.",
+            metadata={"source": "atharv.pdf", "owner": "Atharv Umap"},
+        ),
+        Document(
+            page_content="Note found in unsorted scan.",
+            metadata={"source": "scan.pdf"},  # no 'owner' key — inference failed
+        ),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(mock_llm_cls, "Atharv", "Atharv works in software.")
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("What does Atharv do?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "Atharv works in software" in final_prompt
+    # The unattributed chunk must also reach the prompt.
+    assert "Note found in unsorted scan" in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_falls_through_when_all_owners_null(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """owners.json with every entry null (all inferences failed) must behave
+    like no owners.json at all — no filtering, every named query gets all
+    chunks. Otherwise every named query suppresses against an empty owner set."""
+    mock_load_facts.return_value = {}
+    mock_load_owners.return_value = {
+        "scan1.pdf": {"owner": None, "confidence": "none"},
+        "scan2.pdf": {"owner": None, "confidence": "none"},
+    }
+    chunks = [
+        Document(page_content="First scan content.", metadata={"source": "scan1.pdf"}),
+        Document(page_content="Second scan content.", metadata={"source": "scan2.pdf"}),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(mock_llm_cls, "Atharv", "Some answer.")
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("What does Atharv do?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    assert "First scan content" in final_prompt
+    assert "Second scan content" in final_prompt
+
+
+@patch("src.synthesis._rerank_chunks", side_effect=_passthrough_rerank)
+@patch("src.synthesis.GraphStore")
+@patch("src.synthesis.search")
+@patch("src.synthesis.OllamaLLM")
+@patch("src.synthesis.load_owners")
+@patch("src.synthesis.load_facts")
+def test_generate_answer_still_suppresses_on_strong_signal_no_match(
+    mock_load_facts, mock_load_owners, mock_llm_cls, mock_search, mock_graph_cls, mock_rerank
+):
+    """Regression guard: the Ticket 23 cross-attribution fix must survive.
+    Strong-signal possessive about an unknown person → no chunks, no facts."""
+    mock_load_facts.return_value = {
+        "email": [("Atharv Umap", "atharvumap@gmail.com", "atharv.pdf")],
+    }
+    mock_load_owners.return_value = {
+        "atharv.pdf": {"owner": "Atharv Umap", "confidence": "high"},
+    }
+    chunks = [
+        Document(
+            page_content="Atharv attended Maryland.",
+            metadata={"source": "atharv.pdf", "owner": "Atharv Umap"},
+        ),
+    ]
+    mock_search.return_value = chunks
+    mock_llm = _setup_llm_mock(
+        mock_llm_cls, "Amar Umap", "I don't have enough context to answer that."
+    )
+    mock_graph = MagicMock()
+    mock_graph.get_neighborhood.return_value = []
+    mock_graph_cls.return_value = mock_graph
+
+    generate_answer("what is amar umap's email?")
+
+    final_prompt = str(mock_llm.invoke.call_args_list[1][0][0])
+    # Both direct facts and vector chunks must be suppressed for strong+no_match.
+    assert "atharvumap@gmail.com" not in final_prompt
+    assert "Atharv attended Maryland" not in final_prompt

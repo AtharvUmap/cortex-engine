@@ -6,12 +6,16 @@ A 100% local RAG (Retrieval-Augmented Generation) app that lets you chat with yo
 
 - Python 3.10+
 - [Ollama](https://ollama.com/) installed and running on your machine
+- **macOS:** OCR works out of the box via Apple Vision Framework — no extra install
+- **Linux / Windows:** [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) for scanned PDF fallback and image ingestion
 
 ## 1. Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
+
+The `ocrmac` package is gated on `sys_platform == 'darwin'`, so non-Mac installs skip it and the loader falls back to Tesseract automatically.
 
 ## 2. Pull the Required Ollama Models
 
@@ -47,11 +51,13 @@ This will open the app in your browser (usually at http://localhost:8501).
 
 ## 5. Using the App
 
-1. **Ingest your documents**: Click the **"Ingest Documents"** button in the sidebar. This reads your PDFs, splits them into chunks, and stores them in the local vector database. You only need to do this once per set of documents.
+1. **Ingest your documents**: Click the **"Ingest Documents"** button in the sidebar. This reads your PDFs (with OCR fallback for scanned pages), builds three retrieval indexes — Parent-Child vector store, knowledge graph, and regex-built factual index — and persists them to `db/`. You only need to do this once per set of documents.
 
-2. **Ask questions**: Type your question in the chat input at the bottom of the page. The app will find the most relevant sections from your documents and generate an answer.
+2. **Ask questions**: Type your question in the chat input at the bottom of the page. The app combines all three indexes into the LLM's context: direct facts (when the query has a structured intent like "what's my email"), graph-walk results around the queried entity, and reranked vector chunks.
 
-3. **Add more documents**: Drop new PDFs into `data/`, click "Ingest Documents" again, and they will be added to your knowledge base.
+3. **Inspect the graph**: Switch to the **Brain Map** tab to see the extracted entities and relationships rendered as an interactive network. Useful for spotting bad extractions and understanding what the system "knows."
+
+4. **Add more documents**: Drop new PDFs into `data/`, click "Ingest Documents" again, and they will be added to your knowledge base.
 
 ## Running Tests
 
@@ -63,18 +69,36 @@ pytest tests/ -v
 
 ```
 second-brain/
-├── app.py                 # Streamlit UI
-├── data/                  # Place your PDF files here
-├── db/                    # ChromaDB stores vector data here (auto-generated)
+├── app.py                  # Streamlit UI — chat tab + Brain Map tab + ingestion sidebar
+├── data/                   # Place your PDF / image files here
+├── db/                     # Auto-generated persistence (gitignored)
+│   ├── chroma.sqlite3      #   Vector store (child chunk embeddings)
+│   ├── docstore/           #   Parent chunks (LocalFileStore)
+│   ├── graph.graphml       #   NetworkX knowledge graph
+│   └── facts.json          #   Regex-built factual index
 ├── src/
-│   ├── document_loader.py # Loads PDFs from the data/ folder
-│   ├── splitter.py        # Splits documents into smaller chunks
-│   ├── embedding.py       # Embeds chunks and stores them in ChromaDB
-│   ├── retriever.py       # Searches ChromaDB for relevant chunks
-│   └── qa_chain.py        # Connects the retriever to the LLM
-├── tests/                 # Pytest test suite
-└── requirements.txt       # Python dependencies
+│   ├── document_loader.py  # Hybrid PDF loader: PyPDF + OCR fallback
+│   ├── embedding.py        # Parent-Child ingestion, builds all three indexes
+│   ├── retriever.py        # Vector retrieval (Parent-Child + optional Multi-Query)
+│   ├── graph_extractor.py  # Two-pass LLM extraction: relationships + attributes
+│   ├── graph_store.py      # NetworkX DiGraph wrapper + entity resolution
+│   ├── factual_index.py    # Regex shapes + intent keywords + lookup
+│   ├── synthesis.py        # Hybrid query-time pipeline (vector + graph + facts)
+│   └── visualize.py        # PyVis Brain Map renderer
+├── docs/                   # Architecture deep dives
+├── eval/                   # Evaluation harness
+├── tests/                  # Pytest test suite
+└── requirements.txt
 ```
+
+For deep dives on each component, see the docs:
+
+- `docs/DOCUMENT_LOADING.md` — hybrid loader and OCR strategy
+- `docs/PARENT_CHILD_RETRIEVAL.md` — small-to-big chunking
+- `docs/MULTI_QUERY_RETRIEVAL.md` — LLM-rephrased query expansion
+- `docs/KNOWLEDGE_GRAPH.md` — graph extraction and synthesis
+- `docs/FACTUAL_INDEX.md` — regex-first short-circuit for structured-fact queries
+- `docs/TOOLS_AND_DEPENDENCIES.md` — every external tool and library
 
 ## Troubleshooting
 
