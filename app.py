@@ -1,14 +1,18 @@
+import os
+
 import streamlit as st
 import streamlit.components.v1 as components
 
 from src.document_loader import load_documents
 from src.embedding import embed_documents
+from src.index_status import format_status_line, read_index_status
 from src.synthesis import generate_answer
 from src.visualize import render_graph_html
 
 # On-disk location of the persisted knowledge graph. Must stay in sync with
 # the path embed_documents() writes to during ingestion.
-GRAPH_PATH = "./db/graph.graphml"
+DB_DIR = "./db"
+GRAPH_PATH = f"{DB_DIR}/graph.graphml"
 
 # --- Page configuration ---
 st.set_page_config(page_title="Second Brain", layout="wide")
@@ -19,29 +23,34 @@ st.title("Second Brain")
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# --- Sidebar: Ingestion pipeline ---
+# --- Sidebar ---
+# Three sections, kept terse so the sidebar reads at a glance:
+#   Ingestion — primary action, top of pane.
+#   Indices   — one-line health summary read from on-disk persistence.
+#   Advanced  — collapsed expander with read-only config (env-driven).
 with st.sidebar:
-    st.header("Document Ingestion")
-    st.write("Place your PDF files in the `data/` folder, then click below to process them.")
-
-    # Button triggers the full ingestion pipeline: load -> embed.
-    # Splitting happens inside embed_documents via ParentDocumentRetriever:
-    # it creates 2000-char parents for context and 400-char children for search.
-    if st.button("Ingest Documents"):
-        with st.spinner("Loading PDFs and images..."):
-            # Step 1: Load all supported files from the data directory
+    st.subheader("Ingestion")
+    if st.button("Ingest Documents", use_container_width=True):
+        with st.spinner("Loading..."):
             docs = load_documents("./data")
-
         if not docs:
-            st.warning("No supported files found in the data/ folder.")
+            st.warning("No files in `data/`.")
         else:
-            with st.spinner("Splitting into parent/child chunks and embedding..."):
-                # Step 2: Hand raw documents to the ParentDocumentRetriever.
-                # It handles both parent (2000) and child (400) splitting internally,
-                # embeds children into ChromaDB, and persists parents to disk.
+            with st.spinner("Embedding..."):
                 embed_documents(docs)
+            st.success(f"{len(docs)} pages ingested.")
 
-            st.success(f"Ingested {len(docs)} pages into the knowledge base.")
+    st.subheader("Indices")
+    _status = read_index_status(DB_DIR)
+    st.markdown(format_status_line(_status))
+    if _status["last_ingested"] is not None:
+        st.caption(_status["last_ingested"].strftime("Updated %d %b · %H:%M"))
+
+    with st.expander("Advanced"):
+        st.caption(f"LLM: `{os.getenv('CORTEX_LLM_MODEL', 'llama3.2')}`")
+        st.caption(
+            f"Multi-Query: `{os.getenv('CORTEX_MULTI_QUERY', 'false').lower()}`"
+        )
 
 # --- Main area: tabs ---
 # Chat is the primary view; Brain Map is a secondary explorer for the
