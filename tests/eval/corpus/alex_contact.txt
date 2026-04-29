@@ -1,0 +1,9 @@
+Alex Stone — Personal Contact Card
+
+Alex Stone is a software engineering student at the University of Maryland, College Park, where Alex is majoring in Computer Science with an expected graduation year of 2027.
+
+Primary contact information for Alex Stone:
+Email: alex.stone@example.com
+Phone: 240-555-1234
+
+Alex works on simulation tooling and computer vision research as part of an internship at Acme Robotics. Personal interests include long-distance running, photography, and learning new languages. Alex maintains an active mentorship role for first-year students in the College Park computer science program.

@@ -88,8 +88,9 @@ cortex-engine/
 │   ├── splitter.py         # (legacy — used only by eval harness)
 │   └── qa_chain.py         # (legacy — used only by eval harness)
 ├── docs/                   # Architecture deep dives (see below)
-├── eval/                   # Evaluation harness
+├── eval/                   # Live-doc quality probe — runs against ./db
 ├── tests/                  # Pytest test suite (TDD)
+│   └── eval/               #   Golden-query regression gate (synthetic corpus)
 ├── requirements.txt
 ├── SETUP.md                # Detailed setup and usage guide
 └── README.md
@@ -153,6 +154,13 @@ streamlit run app.py
 ```bash
 pytest tests/ -v
 ```
+
+### Run the Eval Harness
+
+Two evaluation layers, separate by design:
+
+- **`pytest tests/eval/`** — golden-query regression gate. Ingests a small fixed synthetic corpus (`tests/eval/corpus/`) once, runs every spec in `tests/eval/golden_queries.yaml` through `generate_answer`, and asserts on `must_contain` / `must_not_contain` / `should_suppress`. The cross-attribution cases (`cross_attribution_*`) are exactly the failure class Ticket 23 was added to fix — running this before merging guards against that family of regressions sneaking back in. Requires Ollama to be running (`nomic-embed-text` and `llama3.2`); takes 3–5 minutes end to end.
+- **`python eval/real_doc_cases.py`** — live probe against your real `./db`. No fixed corpus, no pytest harness. Use it after ingesting `data/` to spot-check answer quality on actual documents. Cases need to be edited to match the values in your own corpus.
 
 ## Configuration
 

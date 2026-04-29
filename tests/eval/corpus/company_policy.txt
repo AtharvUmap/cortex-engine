@@ -1,0 +1,12 @@
+Acme Robotics — Company Policy Handbook
+
+Acme Robotics is a privately-held robotics company headquartered in Chicago, Illinois. The company was founded in 2015 and currently employs approximately three hundred people across three offices.
+
+For all general inquiries, customers should contact our support team at support@example.com. Our customer service phone line is open weekdays from 9am to 5pm Central Time.
+
+Office Locations:
+- Chicago HQ — primary engineering and operations
+- Boston Research Lab — advanced perception research
+- Berlin European Office — sales and customer success
+
+Acme Robotics develops industrial robots and warehouse automation systems for clients across North America, Europe, and Asia. The company is committed to safe, reliable automation that augments rather than replaces human workers.
