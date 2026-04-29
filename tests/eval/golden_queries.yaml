@@ -17,24 +17,29 @@
 
 - name: alex_email
   query: What is Alex's email?
+  category: per_entity_hit
   must_contain: ["alex.stone@example.com"]
   must_not_contain: ["bilal.khan@example.com"]
 
 - name: alex_phone
   query: What is Alex's phone number?
+  category: per_entity_hit
   must_contain: ["240"]
   must_not_contain: ["301"]
 
 - name: alex_school
   query: Where does Alex go to school?
+  category: per_entity_hit
   must_contain: ["maryland"]
 
 - name: alex_major
   query: What is Alex's major?
+  category: per_entity_hit
   must_contain: ["computer science"]
 
 - name: alex_phone_paraphrase
   query: How can I reach Alex by phone?
+  category: per_entity_hit
   must_contain: ["240"]
   must_not_contain: ["301"]
 
@@ -42,24 +47,29 @@
 
 - name: bilal_email
   query: What is Bilal's email?
+  category: per_entity_hit
   must_contain: ["bilal.khan@example.com"]
   must_not_contain: ["alex.stone@example.com"]
 
 - name: bilal_phone
   query: What is Bilal's phone number?
+  category: per_entity_hit
   must_contain: ["301"]
   must_not_contain: ["240"]
 
 - name: bilal_visa_class
   query: What visa class does Bilal have?
+  category: per_entity_hit
   must_contain: ["f-1"]
 
 - name: bilal_sevis
   query: What is Bilal's SEVIS ID?
+  category: per_entity_hit
   must_contain: ["n0099887766"]
 
 - name: bilal_passport
   query: What is Bilal's passport number?
+  category: per_entity_hit
   must_contain: ["a12345678"]
 
 # --- Cross-attribution suppression (the Ticket 23 regression class) ------
@@ -68,16 +78,19 @@
 
 - name: cross_attribution_email_amar
   query: What is Amar's email?
+  category: cross_attribution
   must_not_contain: ["alex.stone@example.com", "bilal.khan@example.com"]
   should_suppress: true
 
 - name: cross_attribution_phone_charlie
   query: What is Charlie's phone number?
+  category: cross_attribution
   must_not_contain: ["240-555-1234", "301-555-9876"]
   should_suppress: true
 
 - name: cross_attribution_visa_diana
   query: What is Diana's visa class?
+  category: cross_attribution
   must_not_contain: ["f-1"]
   should_suppress: true
 
@@ -87,6 +100,7 @@
 
 - name: generic_possessive_company_email
   query: What is the company's support email?
+  category: generic_possessive
   must_contain: ["support@example.com"]
 
 # Note on weak-signal coverage: an end-to-end golden can't cleanly verify
@@ -100,16 +114,19 @@
 
 - name: capitalized_name_alex
   query: What does Alex study?
+  category: capitalized_name
   must_contain: ["computer science"]
 
 - name: capitalized_name_bilal
   query: Where is Bilal a student?
+  category: capitalized_name
   must_contain: ["northwestern"]
 
 # --- Full-name possessive — strong-signal exact match --------------------
 
 - name: full_name_possessive_alex
   query: What is Alex Stone's email address?
+  category: full_name_possessive
   must_contain: ["alex.stone@example.com"]
   must_not_contain: ["bilal.khan@example.com"]
 
@@ -117,6 +134,7 @@
 
 - name: refusal_field_not_in_corpus
   query: What is Alex's home address in Tokyo?
+  category: refusal
   must_not_contain: ["tokyo street", "tokyo, japan"]
   should_suppress: true
 
@@ -127,5 +145,6 @@
 
 - name: no_intent_customer_service_email
   query: What is the customer service email?
+  category: no_intent
   must_contain: ["support@example.com"]
   must_not_contain: ["alex.stone@example.com", "bilal.khan@example.com"]

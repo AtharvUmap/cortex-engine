@@ -24,10 +24,14 @@ Why these three checks (must_contain / must_not_contain / should_suppress):
     handful of fragments.
 """
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+
+_UNCATEGORIZED = "uncategorized"
 
 
 # Fragments that indicate the LLM refused to answer. Lowercase substring
@@ -57,12 +61,19 @@ class GoldenSpec:
     must_contain / must_not_contain are lowercase-compared substrings.
     should_suppress=True means the answer should refuse rather than assert
     a fact (used for queries about entities not in the corpus).
+
+    category is an optional free-form string used by the report runner to
+    group results into buckets (e.g. "per_entity_hit", "cross_attribution",
+    "refusal"). Specs without a category are aggregated under a fallback
+    bucket so adding a new spec without categorising it doesn't disappear
+    it from the report.
     """
     name: str
     query: str
     must_contain: list = field(default_factory=list)
     must_not_contain: list = field(default_factory=list)
     should_suppress: bool = False
+    category: str | None = None
 
 
 @dataclass
@@ -113,6 +124,7 @@ def load_goldens(path) -> list:
             must_contain=list(entry.get("must_contain") or []),
             must_not_contain=list(entry.get("must_not_contain") or []),
             should_suppress=bool(entry.get("should_suppress", False)),
+            category=entry.get("category"),
         ))
     return specs
 
@@ -173,3 +185,232 @@ def score(answer: str, spec: GoldenSpec) -> ScoreResult:
         forbidden=forbidden,
         suppression_failed=suppression_failed,
     )
+
+
+# --- Suite report ---------------------------------------------------------
+# These types support the `python eval/report.py` runner. The pytest gate
+# (tests/eval/test_golden_queries.py) cares only about pass/fail per spec;
+# the report runner adds aggregate structure on top: pass rate, latency
+# percentiles, per-category breakdown. The split is deliberate — pytest is
+# the merge gate, the report runner is the measurement tool.
+
+@dataclass
+class SpecRun:
+    """One spec's run, including how long the LLM call took.
+
+    `latency_seconds` is wall-clock time for the run_query call only; corpus
+    ingestion happens once outside the loop and isn't billed against any
+    individual spec.
+    """
+    result: "ScoreResult"
+    latency_seconds: float
+
+
+@dataclass
+class CategoryStats:
+    """Aggregate stats for one category bucket within a SuiteReport."""
+    name: str
+    total: int
+    passed: int
+
+    @property
+    def pass_rate(self) -> float:
+        return self.passed / self.total if self.total else 0.0
+
+
+def _percentile(values, p):
+    """Linear-interpolation percentile (matches numpy.percentile default).
+
+    Stdlib has `statistics.quantiles`, but it requires n >= 2 and we want
+    well-defined behavior at n=0 (return 0) and n=1 (return the single
+    value) so the report runner is safe to invoke on a tiny suite.
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (p / 100) * (len(ordered) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(ordered) - 1)
+    weight = rank - lo
+    return ordered[lo] * (1 - weight) + ordered[hi] * weight
+
+
+@dataclass
+class SuiteReport:
+    """Aggregate of all SpecRuns from one suite execution.
+
+    All metrics are computed lazily so the report can be constructed cheaply
+    from a list of runs and inspected by either the markdown formatter or
+    direct attribute access (for the JSON dump or for ad-hoc analysis).
+    """
+    runs: list
+
+    @property
+    def total(self) -> int:
+        return len(self.runs)
+
+    @property
+    def passed(self) -> int:
+        return sum(1 for r in self.runs if r.result.passed)
+
+    @property
+    def pass_rate(self) -> float:
+        return self.passed / self.total if self.total else 0.0
+
+    @property
+    def failures(self) -> list:
+        return [r for r in self.runs if not r.result.passed]
+
+    def _latencies(self):
+        return [r.latency_seconds for r in self.runs]
+
+    @property
+    def latency_mean(self) -> float:
+        latencies = self._latencies()
+        return sum(latencies) / len(latencies) if latencies else 0.0
+
+    @property
+    def latency_p50(self) -> float:
+        return _percentile(self._latencies(), 50)
+
+    @property
+    def latency_p95(self) -> float:
+        return _percentile(self._latencies(), 95)
+
+    @property
+    def by_category(self) -> list:
+        """Group runs by spec.category, returning sorted CategoryStats.
+
+        None / missing categories collapse into a single "uncategorized"
+        bucket. Sorting alphabetically by name keeps the report stable
+        across runs (easier to diff before/after a change)."""
+        buckets: dict = {}
+        for run in self.runs:
+            name = run.result.spec.category or _UNCATEGORIZED
+            entry = buckets.setdefault(name, [0, 0])  # [total, passed]
+            entry[0] += 1
+            if run.result.passed:
+                entry[1] += 1
+        return [
+            CategoryStats(name=name, total=t, passed=p)
+            for name, (t, p) in sorted(buckets.items())
+        ]
+
+
+# --- Formatters -----------------------------------------------------------
+
+def format_markdown(report: SuiteReport) -> str:
+    """Human-readable summary of one suite execution.
+
+    Three sections in fixed order: overall numbers, per-category breakdown,
+    and (only when non-empty) a failures list with each failing spec's
+    query and diagnostic. The per-category section is the part that turns
+    "the suite is X% green" into "the suite is green except in bucket Y" —
+    that's the actionable signal a refactor needs.
+    """
+    lines = ["# Eval suite report", ""]
+
+    if report.total == 0:
+        lines.append("No specs ran.")
+        return "\n".join(lines)
+
+    lines.extend([
+        "## Overall",
+        "",
+        f"- Pass rate: **{report.passed}/{report.total} "
+        f"({report.pass_rate * 100:.1f}%)**",
+        f"- Latency mean: {report.latency_mean:.2f}s",
+        f"- Latency p50: {report.latency_p50:.2f}s",
+        f"- Latency p95: {report.latency_p95:.2f}s",
+        "",
+        "## By category",
+        "",
+        "| Category | Pass rate |",
+        "| --- | --- |",
+    ])
+    for cat in report.by_category:
+        lines.append(
+            f"| {cat.name} | {cat.passed}/{cat.total} "
+            f"({cat.pass_rate * 100:.1f}%) |"
+        )
+
+    if report.failures:
+        lines.extend(["", "## Failures", ""])
+        for run in report.failures:
+            spec = run.result.spec
+            lines.append(f"### `{spec.name}`")
+            lines.append(f"- Query: {spec.query}")
+            lines.append(f"- Answer: {run.result.answer[:300]!r}")
+            if run.result.missing:
+                lines.append(f"- Missing: {run.result.missing}")
+            if run.result.forbidden:
+                lines.append(f"- Forbidden present: {run.result.forbidden}")
+            if run.result.suppression_failed:
+                lines.append("- Expected refusal but answer asserted a fact.")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def to_dict(report: SuiteReport) -> dict:
+    """JSON-safe representation of the report.
+
+    Failures carry their full diagnostic (query, answer, missing, forbidden,
+    suppression_failed) so the artifact is self-contained — a future reader
+    shouldn't need the original YAML to interpret a red run.
+    """
+    return {
+        "total": report.total,
+        "passed": report.passed,
+        "pass_rate": report.pass_rate,
+        "latency_mean": report.latency_mean,
+        "latency_p50": report.latency_p50,
+        "latency_p95": report.latency_p95,
+        "by_category": [
+            {
+                "name": c.name,
+                "total": c.total,
+                "passed": c.passed,
+                "pass_rate": c.pass_rate,
+            }
+            for c in report.by_category
+        ],
+        "failures": [
+            {
+                "name": run.result.spec.name,
+                "query": run.result.spec.query,
+                "category": run.result.spec.category,
+                "answer": run.result.answer,
+                "missing": run.result.missing,
+                "forbidden": run.result.forbidden,
+                "suppression_failed": run.result.suppression_failed,
+            }
+            for run in report.failures
+        ],
+    }
+
+
+# --- Driver ---------------------------------------------------------------
+
+def run_suite(specs, db_path: str, runner=None) -> SuiteReport:
+    """Run every spec through `runner` and return a SuiteReport.
+
+    `runner` defaults to `run_query` (the real generate_answer wrapper).
+    Tests inject a fake runner so they don't pull in Ollama; the end-to-end
+    harness uses the default. Latency is wall-clock around the runner call
+    only — corpus ingestion is amortised by the session-scoped fixture and
+    isn't billed against any individual spec.
+    """
+    runner = runner or run_query
+    runs = []
+    for spec in specs:
+        start = time.perf_counter()
+        answer = runner(spec.query, db_path)
+        elapsed = time.perf_counter() - start
+        runs.append(SpecRun(
+            result=score(answer, spec),
+            latency_seconds=elapsed,
+        ))
+    return SuiteReport(runs=runs)
