@@ -1,0 +1,13 @@
+[theme]
+base = "dark"
+primaryColor = "#4ec9b0"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#1e1e1e"
+textColor = "#e0e0e0"
+font = "sans serif"
+
+[client]
+# Hide developer/deploy chrome so the app reads as a standalone product
+# rather than a Streamlit demo. CSS in app.py covers anything `minimal`
+# doesn't suppress (varies by Streamlit version).
+toolbarMode = "minimal"

@@ -1,8 +1,17 @@
+import re
 from pathlib import Path
 
 import networkx as nx
 
-from src.visualize import build_network, render_graph_html
+from src.visualize import (
+    build_network,
+    color_for_degree,
+    render_graph_html,
+    size_for_degree,
+)
+
+
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 # --- Test helpers ---
@@ -139,3 +148,87 @@ def test_build_network_edges_carry_relationship_label():
     edge = net.edges[0]
     # PyVis stores edges as dicts with 'from'/'to' and label/title fields.
     assert edge.get("label") == "attends" or edge.get("title") == "attends"
+
+
+# --- color_for_degree (Ticket 27 — degree-gradient styling) ---------------
+# The Brain Map colors and sizes nodes by degree so hubs stand out from
+# leaves. Both helpers are pure functions of (degree, max_degree) so they
+# can be unit-tested deterministically; the resulting visual is verified
+# by eyeballing the Streamlit app.
+
+
+def test_color_for_degree_returns_hex_string():
+    for degree in (0, 1, 5, 10):
+        result = color_for_degree(degree, max_degree=10)
+        assert _HEX.match(result), f"expected hex, got {result!r}"
+
+
+def test_color_for_degree_endpoints_differ():
+    """The whole point of a gradient — leaf and hub must not be the same color."""
+    leaf = color_for_degree(0, max_degree=10)
+    hub = color_for_degree(10, max_degree=10)
+    assert leaf != hub
+
+
+def test_color_for_degree_midpoint_distinct_from_endpoints():
+    leaf = color_for_degree(0, max_degree=10)
+    mid = color_for_degree(5, max_degree=10)
+    hub = color_for_degree(10, max_degree=10)
+    assert mid != leaf
+    assert mid != hub
+
+
+def test_color_for_degree_max_zero_does_not_crash():
+    """Edge case: a graph with no edges — every node has degree 0 and
+    max_degree=0. Must not divide by zero."""
+    assert _HEX.match(color_for_degree(0, max_degree=0))
+
+
+def test_color_for_degree_clamps_when_degree_exceeds_max():
+    """Defensive: if degree > max_degree somehow, return a valid hex string
+    (the hub endpoint is the natural clamp)."""
+    hub = color_for_degree(10, max_degree=10)
+    over = color_for_degree(20, max_degree=10)
+    assert _HEX.match(over)
+    assert over == hub
+
+
+# --- size_for_degree -----------------------------------------------------
+
+
+def test_size_for_degree_returns_numeric():
+    """PyVis expects a number for the size attribute."""
+    result = size_for_degree(5, max_degree=10)
+    assert isinstance(result, (int, float))
+
+
+def test_size_for_degree_hub_larger_than_leaf():
+    leaf = size_for_degree(0, max_degree=10)
+    hub = size_for_degree(10, max_degree=10)
+    assert hub > leaf
+
+
+def test_size_for_degree_monotone_increasing():
+    sizes = [size_for_degree(d, max_degree=10) for d in range(11)]
+    assert sizes == sorted(sizes)
+
+
+def test_size_for_degree_max_zero_does_not_crash():
+    """Graph with no edges — falls back to base size, doesn't divide by zero."""
+    result = size_for_degree(0, max_degree=0)
+    assert isinstance(result, (int, float))
+    assert result > 0
+
+
+def test_size_for_degree_leaf_size_visible():
+    """Even single-edge nodes need to render at a readable size — the gradient
+    shouldn't squash leaves down to invisible."""
+    leaf = size_for_degree(0, max_degree=20)
+    assert leaf >= 10
+
+
+def test_size_for_degree_clamps_when_degree_exceeds_max():
+    """Defensive: out-of-range input shouldn't produce gigantic nodes."""
+    hub = size_for_degree(10, max_degree=10)
+    over = size_for_degree(20, max_degree=10)
+    assert over <= hub
