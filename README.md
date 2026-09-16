@@ -87,7 +87,6 @@ cortex-engine/
 │   ├── visualize.py        # PyVis Brain Map renderer
 │   ├── splitter.py         # (legacy — used only by eval harness)
 │   └── qa_chain.py         # (legacy — used only by eval harness)
-├── docs/                   # Architecture deep dives (see below)
 ├── eval/                   # Live-doc quality probe — runs against ./db
 ├── tests/                  # Pytest test suite (TDD)
 │   └── eval/               #   Golden-query regression gate (synthetic corpus)
@@ -95,18 +94,6 @@ cortex-engine/
 ├── SETUP.md                # Detailed setup and usage guide
 └── README.md
 ```
-
-## Documentation
-
-| Doc | What it covers |
-|-----|----------------|
-| `docs/DOCUMENT_LOADING.md` | Hybrid loader, Apple Vision OCR (macOS), Tesseract fallback, image ingestion |
-| `docs/PARENT_CHILD_RETRIEVAL.md` | Small-to-big chunking, parent docstore, child vector index |
-| `docs/MULTI_QUERY_RETRIEVAL.md` | LLM-rephrased query union, when to enable it, why it's off by default |
-| `docs/KNOWLEDGE_GRAPH.md` | Two-pass extraction, entity resolution, graph walk synthesis, Brain Map |
-| `docs/FACTUAL_INDEX.md` | Regex-first short-circuit for structured-fact queries (emails, phones, IDs) |
-| `docs/EVAL_HARNESS.md` | Golden-query gate, scoring, per-category metrics, and the report runner |
-| `docs/TOOLS_AND_DEPENDENCIES.md` | Every external tool and Python package, what it's for, why it was chosen |
 
 ## Setup
 
@@ -158,11 +145,34 @@ pytest tests/ -v
 
 ### Run the Eval Harness
 
-Three evaluation layers, separate by design:
+Quality is gated by 19 golden-query specs and 294 unit tests. Three evaluation
+layers, separate by design:
 
-- **`pytest tests/eval/`** — golden-query regression gate. Ingests a small fixed synthetic corpus (`tests/eval/corpus/`) once, runs every spec in `tests/eval/golden_queries.yaml` through `generate_answer`, and asserts on `must_contain` / `must_not_contain` / `should_suppress`. The cross-attribution cases (`cross_attribution_*`) are exactly the failure class Ticket 23 was added to fix — running this before merging guards against that family of regressions sneaking back in. Requires Ollama to be running (`nomic-embed-text` and `llama3.2`); takes 3–5 minutes end to end.
-- **`python eval/report.py`** — synthetic-corpus report runner. Same corpus and goldens as the pytest gate, but emits aggregate metrics (overall pass rate, latency p50/p95, per-category breakdown, failure listing) instead of pytest's binary pass/fail. Use this to compare quality across changes: `python eval/report.py > before.md`, change something, `python eval/report.py > after.md`, diff. Add `--json` for a machine-readable artifact.
-- **`python eval/real_doc_cases.py`** — live probe against your real `./db`. No fixed corpus, no pytest harness. Use it after ingesting `data/` to spot-check answer quality on actual documents. Cases need to be edited to match the values in your own corpus.
+**`pytest tests/` — unit suite.** 294 tests across retrieval, extraction,
+graph construction, and scoring.
+
+**`pytest tests/eval/` — golden-query regression gate.** Ingests a small fixed
+synthetic corpus (`tests/eval/corpus/`) once, runs all 19 specs from
+`golden_queries.yaml` through `generate_answer`, and asserts on
+`must_contain` / `must_not_contain` / `should_suppress`. The
+`cross_attribution_*` cases guard against a specific failure family: answers
+that pull a fact from one document and attribute it to another. Requires Ollama
+running (`nomic-embed-text` and `llama3.2`); takes 3–5 minutes end to end.
+
+**`python eval/report.py` — quality report runner.** Same corpus and goldens as
+the pytest gate, but emits aggregate metrics instead of binary pass/fail:
+overall pass rate, p50/p95 latency, per-category breakdown, and a failure
+listing. Use it to compare across changes: `python eval/report.py > before.md`,
+make a change, `python eval/report.py > after.md`, diff. `--json` for a
+machine-readable artifact.
+
+**`python eval/real_doc_cases.py` — live probe.** Runs against your actual
+`./db` rather than the synthetic corpus. Use it after ingesting `data/` to
+spot-check answers on real documents. Cases need editing to match your corpus.
+
+I built this because I couldn't tell whether a retrieval change was an
+improvement by reading a few outputs. Both quality and latency regressions now
+block a merge. 
 
 ## Configuration
 
